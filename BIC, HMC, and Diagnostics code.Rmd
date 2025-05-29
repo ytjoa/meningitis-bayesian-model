@@ -1,0 +1,423 @@
+---
+title: "Final Code"
+output:
+  pdf_document: default
+date: "2025-01-30"
+---
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+df <- read.csv("ABM_clean.csv") %>% 
+  mutate(
+    abm = factor(abm)
+  )
+```
+
+# Box and Jitter Plots
+
+```{r}
+# Age
+ggplot(df, aes(x = abm, y = age)) +
+  geom_boxplot(outlier.shape = 21, width = 0.5, fill = "grey90") +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 2) +
+  scale_x_discrete(labels = c(`0` = "No (0)", `1` = "Yes (1)")) +
+  labs(
+    x = "ABM status",
+    y = "Age (years)",
+    title = "Age Distribution by ABM Status"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+# csf_gluc_ratio
+ggplot(df, aes(x = abm, y = csf_gluc_ratio)) +
+  geom_boxplot(outlier.shape = 21, width = 0.5, fill = "grey90") +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 2) +
+  scale_x_discrete(labels = c(`0` = "No (0)", `1` = "Yes (1)")) +
+  labs(
+    x = "ABM status",
+    y = "CSF/Blood Glucose Ratio",
+    title = "CSF/Blood Glucose Ratio by ABM Status"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+# WBC
+ggplot(df, aes(x = abm, y = wbc)) +
+  geom_boxplot(outlier.shape = 21, width = 0.5, fill = "grey90") +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 2) +
+  scale_x_discrete(labels = c(`0` = "No (0)", `1` = "Yes (1)")) +
+  labs(
+    x = "ABM status",
+    y = "White Blood Cell Count (WBC)",
+    title = "WBC Distribution by ABM Status"
+  ) +
+  theme_minimal()
+
+
+```
+
+# Descriptive Statistics
+
+```{r}
+library(dplyr)
+library(janitor)  
+
+cont_vars <- c(
+  "age", "wbc", "pmn", "bands", "bloodgl", "gl", "pr",
+  "reds", "whites", "polys", "lymphs", "monos", "csf_gluc_ratio"
+)
+
+summary_stats <- df %>%
+  group_by(abm) %>%                               
+  summarise(across(
+    all_of(cont_vars),
+    list(
+      mean   = ~mean(.x, na.rm = TRUE),
+      sd     = ~sd(.x,   na.rm = TRUE),
+      median = ~median(.x, na.rm = TRUE),
+      IQR    = ~IQR(.x,    na.rm = TRUE)
+    ),
+    .names = "{col}_{fn}"
+  )) %>%
+  ungroup()
+print(summary_stats, width = Inf)
+
+df <- df %>%
+  mutate(age_group = cut(
+    age,
+    breaks = seq(0, 2, by = 0.1),   # example: 0–0.1, 0.1–0.2, … (age in years)
+    include.lowest = TRUE,
+    right = FALSE
+  ))
+
+
+```
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+
+pretty_stats <- summary_stats %>%                     
+  pivot_longer(
+    -abm,
+    names_to   = c("variable", "stat"),                
+    names_sep  = "_",
+    values_to  = "value"
+  ) %>%
+  pivot_wider(                    
+    names_from  = abm,
+    values_from = value,
+    names_prefix = "abm_"
+  ) %>%
+  mutate(                                            
+    stat = factor(
+      stat,
+      levels = c("mean", "sd", "median", "IQR"),
+      labels = c("Mean", "SD", "Median", "IQR")
+    )
+  ) %>%
+  arrange(variable, stat)
+
+pretty_stats %>%
+  kbl(
+    digits    = 2,
+    col.names = c("Variable", "Statistic", "ABM = 0", "ABM = 1"),
+    align     = "lccc"
+  ) %>%
+  kable_styling(full_width = FALSE, position = "left") %>%
+  collapse_rows(columns = 1, valign = "top")
+
+
+
+
+```
+
+# Model Selection
+
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(MASS)
+
+n <- nrow(df)
+n_train <- floor(0.7 * n)
+
+train_df <- df[1:n_train, ]
+test_df <- df[(n_train + 1):n, ]
+
+y <- train_df$abm
+X_full <- model.matrix(~ age + sex + race + wbc + pmn + bands + + bloodgl + gl + pr + reds +
+                         whites + polys + lymphs + monos + csf_gluc_ratio, data = train_df)[, -1]
+n <- nrow(X_full)
+p <- ncol(X_full)
+
+n_iter <- 10000
+z_chain <- matrix(NA, nrow = n_iter, ncol = p)
+log_post <- rep(NA, n_iter)
+
+log_marglik_bic <- function(y, X_sub) {
+  tryCatch({
+    suppressWarnings({
+      fit <- glm(y ~ X_sub, family = binomial)
+      logLik_val <- logLik(fit)
+      as.numeric(logLik_val) - 0.5 * length(coef(fit)) * log(length(y))
+    })
+  }, error = function(e) {
+    return(-Inf)
+  })
+}
+
+z_current <- rep(0, p)
+loglike_current <- -Inf
+
+set.seed(123)
+for (iter in 1:n_iter) {
+  j <- sample(1:p, 1)
+  z_prop <- z_current
+  z_prop[j] <- 1 - z_current[j]
+  
+  X_prop <- X_full[, which(z_prop == 1), drop = FALSE]
+  loglike_prop <- if (ncol(X_prop) > 0) log_marglik_bic(y, X_prop) else -Inf
+  
+  log_alpha <- loglike_prop - loglike_current
+  if (log(runif(1)) < log_alpha) {
+    z_current <- z_prop
+    loglike_current <- loglike_prop
+  }
+  
+  z_chain[iter, ] <- z_current
+  log_post[iter] <- loglike_current
+  
+  if (iter %% 1000 == 0) cat("Iteration:", iter, "\n")
+}
+
+if (any(is.na(z_chain))) stop("Error: z_chain contains NA — MCMC failed.")
+if (all(apply(z_chain, 1, function(r) all(r == 0)))) stop("MCMC stuck in null model.")
+
+pip <- colMeans(z_chain)
+names(pip) <- colnames(X_full)
+
+list(
+  PosteriorInclusionProbs = sort(pip, decreasing = TRUE)
+)
+
+```
+
+
+```{r}
+pip_df <- data.frame(
+  variable = names(pip),
+  PIP      = as.numeric(pip)
+)
+
+par(mar = c(4, 5, 1, 1))          
+barplot(
+  pip_df$PIP,
+  names.arg = seq_along(pip_df$PIP),
+  ylab = expression(Pr(z[j]==1~"|"~y*","~X)),
+  xlab = "regressor index",
+  ylim = c(0, 1),
+  border = NA
+)
+
+ggplot(pip_df, aes(x = reorder(variable, PIP), y = PIP)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    x = "predictor",
+    y = "posterior inclusion probability"
+  ) +
+  theme_minimal(base_size = 12)
+
+```
+
+# Bayesian Logistic Model and Hamiltonian Monte Carlo
+
+```{r}
+library(rstanarm)
+library(dplyr)
+library(ggplot2)
+
+set.seed(123)
+n <- nrow(df)
+train_indices <- 1:floor(0.7 * n)
+df_train <- df[train_indices, ]
+df_test <- df[-train_indices, ]
+
+fit <- stan_glm(
+  abm ~ csf_gluc_ratio + polys + whites + sex + pr + wbc,
+  data = df_train,
+  family = binomial(link = "logit"),
+  prior = normal(0, 10),
+  prior_intercept = normal(0, 10),
+  chains = 4,
+  iter = 2000,
+  seed = 123,
+  refresh = 500
+)
+```
+
+# Model Diagnostics and Evaluation
+
+```{r}
+# Posterior Summary & Diagnostics
+print(summary(fit, probs = c(0.025, 0.975)))
+```
+
+
+```{r}
+# Traceplots
+plot(fit, plotfun = "trace")
+```
+
+
+```{r}
+# Posterior densities
+plot(fit, plotfun = "dens")
+```
+
+
+```{r}
+# Posterior predictive check
+pp_check(fit)
+```
+
+
+```{r}
+
+# Predicted probabilities
+pred_probs_test <- posterior_epred(fit, newdata = df_test)
+mean_probs_test <- colMeans(pred_probs_test)
+
+# Add to test set
+df_test <- df_test %>%
+  mutate(predicted_prob = mean_probs_test)
+
+# View output
+head(df_test, 50)
+
+
+
+
+```
+
+
+```{r}
+# ROC
+library(pROC)
+
+probs_test <- posterior_epred(fit, newdata = df_test)
+mean_probs_test <- colMeans(probs_test)
+
+roc_obj <- roc(df_test$abm, mean_probs_test)
+
+plot(roc_obj, print.thres = "best", print.auc = TRUE)
+
+opt_thresh <- coords(roc_obj, "best", ret = "threshold")
+print(opt_thresh)
+
+
+
+
+```
+
+
+```{r}
+# Confusion matrix and F1 score
+if (!requireNamespace("caret", quietly = TRUE)) install.packages("caret")
+library(caret)
+
+test_probs <- colMeans(posterior_epred(fit, newdata = df_test))
+threshold <- 0.5216602
+test_pred_class <- ifelse(test_probs >= threshold, 1, 0)
+actual_labels <- df_test$abm
+
+conf_matrix <- confusionMatrix(
+  factor(test_pred_class),
+  factor(actual_labels),
+  positive = "1"
+)
+print(conf_matrix)
+
+tp <- conf_matrix$table[2, 2]
+fp <- conf_matrix$table[2, 1]
+fn <- conf_matrix$table[1, 2]
+
+precision <- tp / (tp + fp)
+recall <- tp / (tp + fn)
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+cat(sprintf("F1 Score: %.4f\n", f1_score))
+
+```
+
+# Frequentist Logistic Regression
+
+```{r}
+library(pROC)
+library(dplyr)
+
+
+set.seed(123)
+n <- nrow(df)
+train_index <- sample(1:n, size = 0.7 * n, replace = FALSE)
+train_data <- df[train_index, ]
+test_data  <- df[-train_index, ]
+
+model <- glm(
+  abm ~ csf_gluc_ratio + polys + whites + pr + sex + wbc, 
+  data = train_data, 
+  family = binomial
+)
+summary(model)
+
+
+freq_test_probs <- predict(model, newdata = test_data, type = "response")
+
+
+roc_obj_freq <- roc(test_data$abm, freq_test_probs)
+plot(roc_obj_freq, print.thres = "best", print.auc = TRUE)
+
+
+opt_thresh_freq <- coords(roc_obj_freq, "best", ret = "threshold")
+print(opt_thresh_freq)
+
+freq_test_pred_class <- ifelse(freq_test_probs >= opt_thresh_freq, 1, 0)
+actual_labels <- test_data$abm
+
+
+freq_test_pred_class <- ifelse(freq_test_probs >= 0.5, 1, 0)  
+actual_labels <- test_data$abm                        
+
+freq_test_pred_class <- factor(freq_test_pred_class, levels = c(0,1))
+actual_labels <- factor(actual_labels, levels = c(0,1))
+
+conf_matrix_freq <- confusionMatrix(
+  freq_test_pred_class,    
+  actual_labels,           
+  positive = "1"
+)
+print(conf_matrix_freq)
+
+precision_freq <- conf_matrix_freq$byClass["Precision"]
+recall_freq <- conf_matrix_freq$byClass["Recall"]
+f1_score_freq <- 2 * (precision_freq * recall_freq) / (precision_freq + recall_freq)
+
+cat(sprintf("Frequentist F1 Score: %.4f\n", f1_score_freq))
+
+
+
+
+```
+

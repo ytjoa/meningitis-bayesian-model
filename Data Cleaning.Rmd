@@ -1,0 +1,32 @@
+---
+title: "Data Cleaning"
+output: pdf_document
+date: "2025-04-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+dplyr::select
+```
+
+```{r}
+# load ABM dataset
+ABM <- read.csv("ABM.csv")
+```
+
+```{r}
+ABM_remove_high_NAs <- ABM[, colMeans(is.na(ABM)) <= 0.5]
+ABM_remove_insig_cols <- ABM_remove_high_NAs[, -c(1, 2,3,18)]
+ABM_new_var <- ABM_remove_insig_cols %>% mutate(
+  csf_gluc_ratio = gl / bloodgl,
+  sex = ifelse(sex == "male", 1, 0),
+  race = ifelse(race == "white", 1, 0)
+)
+ABM_clean <- na.omit(ABM_new_var)
+write.csv(ABM_clean, "ABM_clean.csv", row.names = FALSE)
+```
+
